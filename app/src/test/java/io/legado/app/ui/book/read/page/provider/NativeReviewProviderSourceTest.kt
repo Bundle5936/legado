@@ -44,7 +44,7 @@ class NativeReviewProviderSourceTest {
             "src/main/java/io/legado/app/ui/book/read/ReadBookActivity.kt"
         ).readText().normalizeLines()
         val applyBlock = source.substringAfter("private fun applyReviewSummary(")
-            .substringBefore("private fun prefetchAdjacentReviewSummary(")
+            .substringBefore("private fun buildReviewSummaryKey(")
 
         assertTrue(
             Regex(

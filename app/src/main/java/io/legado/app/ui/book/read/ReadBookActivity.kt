@@ -43,7 +43,6 @@ import io.legado.app.data.entities.BookHighlight
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Bookmark
-import io.legado.app.data.entities.rule.ReviewRule
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.AppWebDav
 import io.legado.app.help.HighlightColors
@@ -330,7 +329,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             eldest: MutableMap.MutableEntry<String, ReviewRuleParser.SummaryResult>
         ): Boolean = size > 5
     }
-    private val reviewSummaryPrefetchingKeys = HashSet<String>()
+    private var reviewSummaryTask: Coroutine<*>? = null
 
     //恢复跳转前进度对话框的交互结果
     private var confirmRestoreProcess: Boolean? = null
@@ -971,16 +970,10 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     private fun resetReviewSummaryState() {
-        reviewSummaryRequestToken++
-        reviewSummaryAppliedKey = null
-        reviewSummaryLoadingKey = null
+        clearReviewSummaryProviders()
         synchronized(reviewSummaryCache) {
             reviewSummaryCache.clear()
         }
-        synchronized(reviewSummaryPrefetchingKeys) {
-            reviewSummaryPrefetchingKeys.clear()
-        }
-        ChapterProvider.clearReviewProviders()
     }
 
     /**
@@ -2126,8 +2119,9 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
         val chapterIndex = ReadBook.durChapterIndex
         val textChapter = ReadBook.curTextChapter
-        if (textChapter != null &&
-            textChapter.chapter.index == chapterIndex &&
+        // 正文预加载或切章尚未完成时，不请求段评。
+        if (textChapter == null ||
+            textChapter.chapter.index != chapterIndex ||
             !textChapter.hasBodyContent
         ) {
             clearReviewSummaryProviders()
@@ -2150,18 +2144,16 @@ class ReadBookActivity : BaseReadBookActivity(),
 
         val key = buildReviewSummaryKey(book, source, rule.hashCode(), chapterIndex)
         if (reviewSummaryAppliedKey == key || reviewSummaryLoadingKey == key) return
+        // 切到另一章或命中已有摘要时，也先取消旧章节的请求。
+        clearReviewSummaryProviders()
         synchronized(reviewSummaryCache) { reviewSummaryCache[key] }?.let { cached ->
             applyReviewSummary(key, chapterIndex, cached)
-            prefetchAdjacentReviewSummary(book, source, rule, chapterIndex)
             return
         }
 
         reviewSummaryLoadingKey = key
         val requestToken = ++reviewSummaryRequestToken
-        if (reviewSummaryAppliedKey != key) {
-            ChapterProvider.clearReviewProviders()
-        }
-        Coroutine.async(lifecycleScope, IO) {
+        reviewSummaryTask = Coroutine.async(lifecycleScope, IO) {
             val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
                 ?: return@async null
             if (chapter.isVolume) return@async null
@@ -2205,7 +2197,6 @@ class ReadBookActivity : BaseReadBookActivity(),
                 reviewSummaryCache[key] = result
             }
             applyReviewSummary(key, chapterIndex, result)
-            prefetchAdjacentReviewSummary(book, source, rule, chapterIndex)
         }.onError {
             releaseReviewSummaryLoadingKey(key)
             if (requestToken != reviewSummaryRequestToken) return@onError
@@ -2232,6 +2223,8 @@ class ReadBookActivity : BaseReadBookActivity(),
         val sourceHash = source.mainJs.hashCode()
         val key = buildReviewSummaryKey(book, source, sourceHash, chapterIndex)
         if (reviewSummaryAppliedKey == key || reviewSummaryLoadingKey == key) return
+        // 切到另一章或命中已有摘要时，也先取消旧章节的请求。
+        clearReviewSummaryProviders()
         synchronized(reviewSummaryCache) { reviewSummaryCache[key] }?.let { cached ->
             applyReviewSummary(key, chapterIndex, cached)
             return
@@ -2239,10 +2232,7 @@ class ReadBookActivity : BaseReadBookActivity(),
 
         reviewSummaryLoadingKey = key
         val requestToken = ++reviewSummaryRequestToken
-        if (reviewSummaryAppliedKey != key) {
-            ChapterProvider.clearReviewProviders()
-        }
-        Coroutine.async(lifecycleScope, IO) {
+        reviewSummaryTask = Coroutine.async(lifecycleScope, IO) {
             val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
                 ?: return@async null
             if (chapter.isVolume) return@async null
@@ -2289,6 +2279,8 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     private fun clearReviewSummaryProviders() {
         reviewSummaryRequestToken++
+        reviewSummaryTask?.cancel()
+        reviewSummaryTask = null
         reviewSummaryAppliedKey = null
         reviewSummaryLoadingKey = null
         ChapterProvider.clearReviewProviders()
@@ -2310,78 +2302,6 @@ class ReadBookActivity : BaseReadBookActivity(),
         )
         reviewSummaryAppliedKey = key
         binding.readView.upContent(relativePosition = 0, resetPageOffset = false)
-    }
-
-    private fun prefetchAdjacentReviewSummary(
-        book: Book,
-        source: BaseSource,
-        rule: ReviewRule,
-        chapterIndex: Int
-    ) {
-        val maxIndex = if (ReadBook.simulatedChapterSize > 0) {
-            ReadBook.simulatedChapterSize
-        } else {
-            ReadBook.chapterSize
-        }
-        if (maxIndex <= 0) return
-
-        val requestToken = reviewSummaryRequestToken
-        for (targetIndex in intArrayOf(chapterIndex - 1, chapterIndex + 1)) {
-            if (targetIndex !in 0 until maxIndex) continue
-            val loadedChapter = sequenceOf(
-                ReadBook.prevTextChapter,
-                ReadBook.curTextChapter,
-                ReadBook.nextTextChapter
-            ).filterNotNull().firstOrNull { it.chapter.index == targetIndex }
-            if (loadedChapter == null || !loadedChapter.hasBodyContent) continue
-
-            val key = buildReviewSummaryKey(book, source, rule.hashCode(), targetIndex)
-            if (reviewSummaryLoadingKey == key) continue
-            if (synchronized(reviewSummaryCache) { reviewSummaryCache.containsKey(key) }) continue
-            val shouldPrefetch = synchronized(reviewSummaryPrefetchingKeys) {
-                reviewSummaryPrefetchingKeys.add(key)
-            }
-            if (!shouldPrefetch) continue
-
-            Coroutine.async(lifecycleScope, IO) {
-                val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, targetIndex)
-                    ?: return@async null
-                if (chapter.isVolume) return@async null
-                val summaryUrl = rule.reviewSummaryUrl?.takeIf { it.isNotBlank() }
-                    ?: return@async null
-                val analyzeUrl = AnalyzeUrl(
-                    summaryUrl,
-                    baseUrl = chapter.url,
-                    source = source,
-                    ruleData = book,
-                    chapter = chapter,
-                    coroutineContext = coroutineContext
-                )
-                val body = analyzeUrl.getStrResponseAwait(useWebView = false).body
-                    ?: return@async null
-                ReviewRuleParser.parseSummary(
-                    body,
-                    rule,
-                    source,
-                    book,
-                    chapter,
-                    analyzeUrl.url,
-                    coroutineContext
-                )
-            }.onSuccess(Main) { result ->
-                synchronized(reviewSummaryPrefetchingKeys) {
-                    reviewSummaryPrefetchingKeys.remove(key)
-                }
-                if (requestToken != reviewSummaryRequestToken || result == null) return@onSuccess
-                synchronized(reviewSummaryCache) {
-                    reviewSummaryCache[key] = result
-                }
-            }.onError {
-                synchronized(reviewSummaryPrefetchingKeys) {
-                    reviewSummaryPrefetchingKeys.remove(key)
-                }
-            }
-        }
     }
 
     private fun buildReviewSummaryKey(
