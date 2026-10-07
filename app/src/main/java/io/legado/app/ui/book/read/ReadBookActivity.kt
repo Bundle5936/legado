@@ -752,7 +752,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 "all" -> refreshAllChapters()
                 "resources" -> {
                     resetReviewSummaryState()
-                    ReadBook.book?.let { viewModel.refreshResources(it, includePreloaded = true) }
+                    ReadBook.book?.let { viewModel.refreshResources(it) }
                 }
             }
         }
@@ -790,7 +790,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         } else {
             ReadBook.book?.let {
                 if (viewModel.resourceThemeChanged(it)) {
-                    viewModel.refreshResources(it, includePreloaded = false)
+                    viewModel.refreshResources(it)
                     return@let
                 }
                 ReadBook.preserveCurrentPositionForRefresh()

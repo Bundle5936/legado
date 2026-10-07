@@ -464,12 +464,11 @@ class ReadBookViewModel(application: Application) : BaseViewModel(application) {
         return BookHelp.resourcesOutdated(book, chapter)
     }
 
-    fun refreshResources(book: Book, includePreloaded: Boolean) {
+    fun refreshResources(book: Book) {
         val source = ReadBook.bookSource ?: return
         val currentIndex = ReadBook.durChapterIndex
-        val before = if (includePreloaded) maxOf(1, minOf(5, AppConfig.preDownloadNum)) else 0
-        val after = if (includePreloaded) maxOf(1, AppConfig.preDownloadNum) else 0
-        val indexes = maxOf(0, currentIndex - before)..minOf(ReadBook.chapterSize - 1, currentIndex + after)
+        // 主题资源刷新也只处理当前章，避免重新下载尚未打开的章节。
+        val indexes = currentIndex..currentIndex
         val oldImages = ReadBook.resourceImageSources(indexes)
         val generation = ResourceThemeGeneration.current()
         val previousRefresh = resourceRefreshCoroutine

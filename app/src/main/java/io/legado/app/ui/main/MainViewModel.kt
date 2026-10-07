@@ -274,10 +274,8 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
                     BookHelp.updateCacheFolder(it, book)
                 }
                 ReadBook.onChapterListUpdated(book)
-                val policy = tocUpdateRequests.close(request)
-                if (policy == TocUpdatePolicy.ALLOW_PRE_DOWNLOAD) {
-                    addDownload(source, book)
-                }
+                // 保守模式仅更新书架目录，不自动排队下载后续正文。
+                tocUpdateRequests.close(request)
             }.onFailure {
                 currentCoroutineContext().ensureActive()
                 AppLog.put("${book.name} 更新目录失败\n${it.localizedMessage}", it)
@@ -298,17 +296,6 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
         } else if (reset) {
             onUpBooksLiveData.postValue(0)
         }
-    }
-
-    @Synchronized
-    private fun addDownload(source: BookSource, book: Book) {
-        if (AppConfig.preDownloadNum == 0) return
-        val endIndex = min(
-            book.totalChapterNum - 1,
-            book.durChapterIndex.plus(AppConfig.preDownloadNum)
-        )
-        val cacheBook = CacheBook.getOrCreate(source, book)
-        cacheBook.addDownload(book.durChapterIndex, endIndex, refreshResources = true)
     }
 
     /**

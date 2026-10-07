@@ -129,6 +129,7 @@
 
         <io.legado.app.lib.prefs.Preference
             android:key="preDownloadNum"
+            android:enabled="false"
             android:summary="@string/pre_download_s"
             android:title="@string/pre_download" />
 
