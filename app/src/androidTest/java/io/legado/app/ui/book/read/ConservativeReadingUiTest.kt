@@ -156,6 +156,25 @@ class ConservativeReadingUiTest {
         assertEquals(1, bodyRequests.get(2))
     }
 
+    @Test fun transientFocusChangesKeepTheCurrentBodyRequestAlive() {
+        blockFirstBody.set(true)
+        summaryGate.countDown()
+        launch()
+        await("当前章正文请求开始") { bodyRequests.get(0) == 1 }
+        main {
+            it.onWindowFocusChanged(false)
+            it.onTopResumedActivityChanged(false)
+            ReadBook.cancelPreDownloadTask()
+            it.onWindowFocusChanged(true)
+            it.onTopResumedActivityChanged(true)
+        }
+        bodyGate.countDown()
+        awaitReader(0)
+        awaitBubbles(0)
+        assertEquals("失焦后仍由原请求完成，不重新读取", 1, bodyRequests.get(0))
+        for (index in 1..3) assertEquals(0, bodyRequests.get(index))
+    }
+
     @Test fun retryCommentsDoesNotRefreshBodyOrRetryOnPageRedraw() {
         failFirstSummary.set(true)
         summaryGate.countDown()

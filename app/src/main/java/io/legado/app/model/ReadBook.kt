@@ -176,7 +176,7 @@ object ReadBook : CoroutineScope by MainScope() {
         set(value) {
             if (field != value) {
                 field = value
-                cancelReadingDownloads()
+                cancelReadingDownloads("chapter_change")
             }
         }
     var durChapterPos = 0
@@ -747,7 +747,7 @@ object ReadBook : CoroutineScope by MainScope() {
     }
 
     fun clearTextChapter() {
-        cancelReadingDownloads()
+        cancelReadingDownloads("clear_chapter")
         clearExpiredChapterLoadingJob(true)
         pendingHighlightJump = null
         pendingHighlightAnchor = null
@@ -774,7 +774,7 @@ object ReadBook : CoroutineScope by MainScope() {
     @Synchronized
     fun clearResourceChapters(indexes: IntRange) {
         if (durChapterIndex in indexes && curTextChapter != null) preserveCurrentPositionForRefresh()
-        if (durChapterIndex in indexes) cancelReadingDownloads()
+        if (durChapterIndex in indexes) cancelReadingDownloads("refresh_resources")
         listOfNotNull(prevTextChapter, curTextChapter, nextTextChapter)
             .filter { it.chapter.index in indexes }.forEach {
                 it.cancelLayout()
@@ -1803,11 +1803,14 @@ object ReadBook : CoroutineScope by MainScope() {
 
     /** 保守模式关闭自动网络预读；保留既有取消入口。 */
     fun cancelPreDownloadTask() {
-        cancelReadingDownloads()
+        // 焦点和生命周期回调只负责停止预读，不得误取消当前章。
+        // 自动预读已关闭；真正换章、换书和退出仍由下方入口取消。
+        AppLog.putDebug("页面状态变化：自动预读已关闭，保留当前章下载")
     }
 
     @Synchronized
-    private fun cancelReadingDownloads() {
+    private fun cancelReadingDownloads(reason: String) {
+        AppLog.putDebug("取消正文下载：reason=$reason book=${book?.name} chapter=$durChapterIndex")
         readingRequests.cancel()
         loadingChapters.clear()
     }
@@ -2023,7 +2026,7 @@ object ReadBook : CoroutineScope by MainScope() {
 
     private fun releaseAndCancel() {
         msg = null
-        cancelReadingDownloads()
+        cancelReadingDownloads("release_reader")
         invalidateHighlightRuleMatches()
         coroutineContext.cancelChildren()
         ImageProvider.clear()

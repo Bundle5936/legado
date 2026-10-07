@@ -125,6 +125,11 @@ on:
       - 'app/src/androidTest/java/io/legado/app/model/webBook/**'
       - 'app/src/androidTest/assets/issue1180*'
   workflow_dispatch:
+    inputs:
+      test_classes:
+        description: '指定测试类，留空执行完整界面回归'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -137,6 +142,8 @@ jobs:
   dialog:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    env:
+      READER_UI_TEST_CLASSES: ${{ inputs.test_classes }}
     steps:
       - uses: actions/checkout@v7
         with:
