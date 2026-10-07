@@ -1727,4 +1727,7 @@
     <string name="reimport_book_source">重新导入本书书源</string>
     <string name="customize_my">自定义我的页面</string>
     <string name="my_more_items">将选中的功能放入更多</string>
+    <string name="review_summary_loading">段评加载中，完成后自动显示泡泡</string>
+    <string name="review_summary_failed">段评加载失败，无需刷新正文</string>
+    <string name="review_summary_retry">重试段评</string>
 </resources>

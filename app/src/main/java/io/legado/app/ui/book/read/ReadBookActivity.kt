@@ -2,6 +2,7 @@ package io.legado.app.ui.book.read
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import com.google.android.material.snackbar.Snackbar
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
@@ -321,6 +322,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
     private var reviewSummaryAppliedKey: String? = null
     private var reviewSummaryLoadingKey: String? = null
+    private var reviewSummaryFailedKey: String? = null
+    private var reviewSummaryStatus: Snackbar? = null
+    private var reviewSummaryLoadingNotice: Runnable? = null
     private var lastReviewDialogRequestAt = 0L
     private var reviewSummaryRequestToken = 0L
     private val reviewSummaryCache = object :
@@ -2143,7 +2147,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
 
         val key = buildReviewSummaryKey(book, source, rule.hashCode(), chapterIndex)
-        if (reviewSummaryAppliedKey == key || reviewSummaryLoadingKey == key) return
+        if (reviewSummaryAppliedKey == key || reviewSummaryLoadingKey == key || reviewSummaryFailedKey == key) return
         // 切到另一章或命中已有摘要时，也先取消旧章节的请求。
         clearReviewSummaryProviders()
         synchronized(reviewSummaryCache) { reviewSummaryCache[key] }?.let { cached ->
@@ -2152,6 +2156,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
 
         reviewSummaryLoadingKey = key
+        showReviewSummaryLoading(key)
         val requestToken = ++reviewSummaryRequestToken
         reviewSummaryTask = Coroutine.async(lifecycleScope, IO) {
             val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
@@ -2165,7 +2170,9 @@ class ReadBookActivity : BaseReadBookActivity(),
                 chapter = chapter,
                 coroutineContext = coroutineContext
             )
-            val body = analyzeUrl.getStrResponseAwait(useWebView = false).body
+            val response = analyzeUrl.getStrResponseAwait(useWebView = false)
+            check(response.raw.isSuccessful) { "段评请求失败：HTTP ${response.raw.code}" }
+            val body = response.body
                 ?: return@async null
             ReviewRuleParser.parseSummary(
                 body,
@@ -2177,8 +2184,8 @@ class ReadBookActivity : BaseReadBookActivity(),
                 coroutineContext
             )
         }.onSuccess(Main) { result ->
-            releaseReviewSummaryLoadingKey(key)
             if (requestToken != reviewSummaryRequestToken) return@onSuccess
+            releaseReviewSummaryLoadingKey(key)
             val currentBook = ReadBook.book ?: return@onSuccess
             val currentSource = ReadBook.bookSource ?: return@onSuccess
             val currentRule = currentSource.ruleReview ?: return@onSuccess
@@ -2190,7 +2197,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             )
             if (currentKey != key) return@onSuccess
             if (result == null) {
-                ChapterProvider.clearReviewProviders()
+                showReviewSummaryFailure(key)
                 return@onSuccess
             }
             synchronized(reviewSummaryCache) {
@@ -2198,8 +2205,8 @@ class ReadBookActivity : BaseReadBookActivity(),
             }
             applyReviewSummary(key, chapterIndex, result)
         }.onError {
-            releaseReviewSummaryLoadingKey(key)
             if (requestToken != reviewSummaryRequestToken) return@onError
+            releaseReviewSummaryLoadingKey(key)
             val currentBook = ReadBook.book ?: return@onError
             val currentSource = ReadBook.bookSource ?: return@onError
             val currentRule = currentSource.ruleReview ?: return@onError
@@ -2210,7 +2217,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                     ReadBook.durChapterIndex
                 ) != key
             ) return@onError
-            ChapterProvider.clearReviewProviders()
+            showReviewSummaryFailure(key)
             AppLog.put("加载段评统计出错\n${it.localizedMessage}", it)
         }
     }
@@ -2222,7 +2229,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     ) {
         val sourceHash = source.mainJs.hashCode()
         val key = buildReviewSummaryKey(book, source, sourceHash, chapterIndex)
-        if (reviewSummaryAppliedKey == key || reviewSummaryLoadingKey == key) return
+        if (reviewSummaryAppliedKey == key || reviewSummaryLoadingKey == key || reviewSummaryFailedKey == key) return
         // 切到另一章或命中已有摘要时，也先取消旧章节的请求。
         clearReviewSummaryProviders()
         synchronized(reviewSummaryCache) { reviewSummaryCache[key] }?.let { cached ->
@@ -2231,6 +2238,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
 
         reviewSummaryLoadingKey = key
+        showReviewSummaryLoading(key)
         val requestToken = ++reviewSummaryRequestToken
         reviewSummaryTask = Coroutine.async(lifecycleScope, IO) {
             val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
@@ -2238,8 +2246,8 @@ class ReadBookActivity : BaseReadBookActivity(),
             if (chapter.isVolume) return@async null
             JsSourceReview.getReviewSummaryAwait(source, book, chapter)
         }.onSuccess(Main) { result ->
-            releaseReviewSummaryLoadingKey(key)
             if (requestToken != reviewSummaryRequestToken) return@onSuccess
+            releaseReviewSummaryLoadingKey(key)
             val currentBook = ReadBook.book ?: return@onSuccess
             val currentSource = ReadBook.bookSource ?: return@onSuccess
             if (!currentSource.isJsSource()) return@onSuccess
@@ -2252,6 +2260,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             if (currentKey != key) return@onSuccess
             if (result == null) {
                 reviewSummaryAppliedKey = key
+                dismissReviewSummaryStatus()
                 ChapterProvider.clearReviewProviders()
                 return@onSuccess
             }
@@ -2260,8 +2269,8 @@ class ReadBookActivity : BaseReadBookActivity(),
             }
             applyReviewSummary(key, chapterIndex, result)
         }.onError {
-            releaseReviewSummaryLoadingKey(key)
             if (requestToken != reviewSummaryRequestToken) return@onError
+            releaseReviewSummaryLoadingKey(key)
             val currentBook = ReadBook.book ?: return@onError
             val currentSource = ReadBook.bookSource ?: return@onError
             if (!currentSource.isJsSource()) return@onError
@@ -2272,12 +2281,46 @@ class ReadBookActivity : BaseReadBookActivity(),
                     ReadBook.durChapterIndex,
                 ) != key
             ) return@onError
-            ChapterProvider.clearReviewProviders()
+            showReviewSummaryFailure(key)
             AppLog.put("加载 JavaScript 段评统计出错\n${it.localizedMessage}", it)
         }
     }
 
+    private fun showReviewSummaryLoading(key: String) {
+        dismissReviewSummaryStatus()
+        reviewSummaryLoadingNotice = Runnable {
+            if (reviewSummaryLoadingKey == key) {
+                reviewSummaryStatus = Snackbar.make(binding.root,
+                    R.string.review_summary_loading, Snackbar.LENGTH_INDEFINITE).also { it.show() }
+            }
+        }.also { handler.postDelayed(it, 1000) }
+    }
+
+    private fun dismissReviewSummaryStatus() {
+        reviewSummaryLoadingNotice?.let { handler.removeCallbacks(it) }
+        reviewSummaryLoadingNotice = null
+        reviewSummaryStatus?.dismiss()
+        reviewSummaryStatus = null
+    }
+
+    private fun showReviewSummaryFailure(key: String) {
+        dismissReviewSummaryStatus()
+        reviewSummaryFailedKey = key
+        ChapterProvider.clearReviewProviders()
+        reviewSummaryStatus = Snackbar.make(binding.root,
+            R.string.review_summary_failed, Snackbar.LENGTH_INDEFINITE)
+            .setAction(R.string.review_summary_retry) {
+                if (reviewSummaryFailedKey == key) {
+                    // 只重试摘要，不刷新正文、目录或书源。
+                    reviewSummaryFailedKey = null
+                    loadReviewSummaryIfNeeded()
+                }
+            }.also { it.show() }
+    }
+
     private fun clearReviewSummaryProviders() {
+        dismissReviewSummaryStatus()
+        reviewSummaryFailedKey = null
         reviewSummaryRequestToken++
         reviewSummaryTask?.cancel()
         reviewSummaryTask = null
@@ -2291,6 +2334,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         chapterIndex: Int,
         result: ReviewRuleParser.SummaryResult
     ) {
+        dismissReviewSummaryStatus()
         ChapterProvider.setReviewProviders(
             countProvider = { targetChapterIndex, reviewId ->
                 if (targetChapterIndex == chapterIndex) result.counts[reviewId] ?: 0 else 0
@@ -2833,6 +2877,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     override fun onDestroy() {
+        dismissReviewSummaryStatus()
         super.onDestroy()
         aloudControls.dispose()
         tts?.clearTts()

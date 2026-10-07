@@ -1840,4 +1840,7 @@
     <string name="reimport_book_source">Reimport this book’s source</string>
     <string name="customize_my">Customize My page</string>
     <string name="my_more_items">Move selected items to More</string>
+    <string name="review_summary_loading">Comments are loading; bubbles will appear automatically</string>
+    <string name="review_summary_failed">Comments failed to load. No need to refresh the chapter.</string>
+    <string name="review_summary_retry">Retry comments</string>
 </resources>

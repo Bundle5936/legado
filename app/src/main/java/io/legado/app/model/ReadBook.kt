@@ -63,17 +63,13 @@ import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Dispatchers.Main
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import splitties.init.appCtx
@@ -176,6 +172,13 @@ object ReadBook : CoroutineScope by MainScope() {
     var chapterSize = 0
     var simulatedChapterSize = 0
     var durChapterIndex = 0
+        set(value) {
+            if (field != value) {
+                field = value
+                cancelReadingDownloads()
+                clearExpiredChapterLoadingJob(true)
+            }
+        }
     var durChapterPos = 0
     var isLocalBook = true
     var chapterChanged = false
@@ -203,12 +206,10 @@ object ReadBook : CoroutineScope by MainScope() {
     /* web端阅读进度记录 */
     var webBookProgress: BookProgress? = null
 
-    var preDownloadTask: Job? = null
     val downloadedChapters = hashSetOf<Int>()
     val downloadFailChapters = hashMapOf<Int, Int>()
     var contentProcessor: ContentProcessor? = null
-    val downloadScope = CoroutineScope(SupervisorJob() + IO)
-    val preDownloadSemaphore = Semaphore(2)
+    private val readingRequests = CurrentChapterRequests()
     val executor = globalExecutor
 
     fun resetData(book: Book) {
@@ -746,6 +747,7 @@ object ReadBook : CoroutineScope by MainScope() {
     }
 
     fun clearTextChapter() {
+        cancelReadingDownloads()
         clearExpiredChapterLoadingJob(true)
         pendingHighlightJump = null
         pendingHighlightAnchor = null
@@ -772,7 +774,7 @@ object ReadBook : CoroutineScope by MainScope() {
     @Synchronized
     fun clearResourceChapters(indexes: IntRange) {
         if (durChapterIndex in indexes && curTextChapter != null) preserveCurrentPositionForRefresh()
-        preDownloadTask?.cancel()
+        if (durChapterIndex in indexes) cancelReadingDownloads()
         listOfNotNull(prevTextChapter, curTextChapter, nextTextChapter)
             .filter { it.chapter.index in indexes }.forEach {
                 it.cancelLayout()
@@ -1172,7 +1174,6 @@ object ReadBook : CoroutineScope by MainScope() {
             }
         }
         upReadTime()
-        preDownload()
     }
 
     /**
@@ -1362,32 +1363,36 @@ object ReadBook : CoroutineScope by MainScope() {
         success: (() -> Unit)? = null,
     ) {
         val requestBook = book ?: return
-        Coroutine.async {
-            val book = requestBook
-            val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, index) ?: return@async
-            val contentToken = BookHelp.contentSaveToken(book, chapter)
-            if (addLoading(index)) {
-                BookHelp.getContent(book, chapter)?.let {
-                    contentLoadFinish(
-                        book,
-                        chapter,
-                        it,
-                        upContent,
-                        resetPageOffset,
-                        readPositionVersion = readPositionVersion,
-                        contentToken = contentToken,
-                        success = success
-                    )
-                } ?: download(
-                    downloadScope,
-                    chapter,
-                    resetPageOffset,
-                    readPositionVersion = readPositionVersion,
-                    success = success,
-                )
+        val requestSource = bookSource
+        val request = readingRequests.select(requestBook.bookUrl, durChapterIndex)
+        Coroutine.async(request.scope, IO) {
+            val chapter = appDb.bookChapterDao.getChapter(requestBook.bookUrl, index) ?: return@async
+            val contentToken = BookHelp.contentSaveToken(requestBook, chapter)
+            val claimed = synchronized(this@ReadBook) {
+                readingRequests.isCurrent(request) && addLoading(index)
+            }
+            if (!claimed) return@async
+            try {
+                // 相邻章仅复用已有本地正文，绝不进入网络下载。
+                val content = request.content(index,
+                    cached = { BookHelp.getContent(requestBook, chapter) },
+                    download = { downloadAwait(requestBook, requestSource, chapter) },
+                ) ?: return@async
+                ensureActive()
+                synchronized(this@ReadBook) {
+                    if (readingRequests.isCurrent(request)) {
+                        contentLoadFinish(requestBook, chapter, content, upContent, resetPageOffset,
+                            readPositionVersion = readPositionVersion, contentToken = contentToken,
+                            success = success)
+                    }
+                }
+            } finally {
+                synchronized(this@ReadBook) {
+                    if (readingRequests.isCurrent(request)) removeLoading(index)
+                }
             }
         }.onError {
-            AppLog.put("加载正文出错\n${it.localizedMessage}")
+            if (it !is CancellationException) AppLog.put("加载正文出错\n${it.localizedMessage}")
         }
     }
 
@@ -1397,99 +1402,46 @@ object ReadBook : CoroutineScope by MainScope() {
         resetPageOffset: Boolean = false,
         readPositionVersion: Long? = null,
         success: (() -> Unit)? = null,
-    ) = withContext(IO) {
-        val book = book ?: return@withContext
-        val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, index) ?: return@withContext
-        val contentToken = BookHelp.contentSaveToken(book, chapter)
-        if (addLoading(index)) {
+    ) {
+        val requestBook = book ?: return
+        val requestSource = bookSource
+        val request = readingRequests.select(requestBook.bookUrl, durChapterIndex)
+        request.run {
+            val chapter = appDb.bookChapterDao.getChapter(requestBook.bookUrl, index) ?: return@run
+            val contentToken = BookHelp.contentSaveToken(requestBook, chapter)
+            val claimed = synchronized(this@ReadBook) {
+                readingRequests.isCurrent(request) && addLoading(index)
+            }
+            if (!claimed) return@run
             try {
-                val content = BookHelp.getContent(book, chapter) ?: downloadAwait(chapter)
-                contentLoadFinishAwait(
-                    book,
-                    chapter,
-                    content,
-                    upContent,
-                    resetPageOffset,
-                    readPositionVersion,
-                    contentToken,
-                )
-                if (BookHelp.isContentSaveCurrent(contentToken)) success?.invoke()
+                val content = request.content(index,
+                    cached = { BookHelp.getContent(requestBook, chapter) },
+                    download = { downloadAwait(requestBook, requestSource, chapter) },
+                ) ?: return@run
+                ensureActive()
+                contentLoadFinishAwait(requestBook, chapter, content, upContent,
+                    resetPageOffset, readPositionVersion, contentToken)
+                if (readingRequests.isCurrent(request) && BookHelp.isContentSaveCurrent(contentToken)) {
+                    success?.invoke()
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 AppLog.put("加载正文出错\n${e.localizedMessage}")
             } finally {
                 synchronized(this@ReadBook) {
-                    if (ReadBook.book?.bookUrl == book.bookUrl && BookHelp.isContentSaveCurrent(contentToken)) {
-                        removeLoading(index)
-                    }
+                    if (readingRequests.isCurrent(request)) removeLoading(index)
                 }
             }
         }
     }
 
-    /**
-     * 下载正文
-     */
-    private suspend fun downloadIndex(index: Int) {
-        if (index < 0) return
-        if (index > chapterSize - 1) {
-            upToc()
-            return
-        }
-        val book = book ?: return
-        val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, index) ?: return
-        if (BookHelp.hasContent(book, chapter)) {
-            downloadedChapters.add(chapter.index)
+    private suspend fun downloadAwait(book: Book, source: BookSource?, chapter: BookChapter): String {
+        currentCoroutineContext().ensureActive()
+        return if (source != null) {
+            CacheBook.getOrCreate(source, book).downloadAwait(chapter)
         } else {
-            delay(1000)
-            if (addLoading(index)) {
-                download(downloadScope, chapter, false, preDownloadSemaphore)
-            }
-        }
-    }
-
-    /**
-     * 下载正文
-     */
-    private fun download(
-        scope: CoroutineScope,
-        chapter: BookChapter,
-        resetPageOffset: Boolean,
-        semaphore: Semaphore? = null,
-        readPositionVersion: Long? = null,
-        success: (() -> Unit)? = null,
-    ) {
-        val book = book ?: return removeLoading(chapter.index)
-        val bookSource = bookSource
-        if (bookSource != null) {
-            CacheBook.getOrCreate(bookSource, book).download(
-                scope,
-                chapter,
-                semaphore,
-                resetPageOffset = resetPageOffset,
-                readPositionVersion = readPositionVersion,
-                success = success,
-            )
-        } else {
-            val msg = if (book.isLocal) "无内容" else "没有书源"
-            contentLoadFinish(
-                book,
-                chapter,
-                "加载正文失败\n$msg",
-                resetPageOffset = resetPageOffset,
-                readPositionVersion = readPositionVersion,
-                success = success
-            )
-        }
-    }
-
-    private suspend fun downloadAwait(chapter: BookChapter): String {
-        val book = book!!
-        val bookSource = bookSource
-        if (bookSource != null) {
-            return CacheBook.getOrCreate(bookSource, book).downloadAwait(chapter)
-        } else {
-            val msg = if (book.isLocal) "无内容" else "没有书源"
-            return "加载正文失败\n$msg"
+            "加载正文失败\n${if (book.isLocal) "无内容" else "没有书源"}"
         }
     }
 
@@ -1847,82 +1799,15 @@ object ReadBook : CoroutineScope by MainScope() {
         }
     }
 
-    /**
-     * 预下载
-     */
-    private fun preDownload() {
-        if (book?.isLocal == true) return
-        executor.execute {
-            if (AppConfig.preDownloadNum < 2) {
-                upToc()
-                return@execute
-            }
-            preDownloadTask?.cancel()
-            preDownloadTask = launch(IO) {
-                //书源支持批量正文时先整批预取,没取到的章节走下面的单章流程兜底
-                bookSource?.takeIf { it.supportContentBatch() }?.let { source ->
-                    preDownloadBatch(source)
-                }
-                //预下载
-                launch {
-                    val maxChapterIndex =
-                        min(durChapterIndex + AppConfig.preDownloadNum, chapterSize)
-                    for (i in durChapterIndex.plus(2)..maxChapterIndex) {
-                        if (downloadedChapters.contains(i)) continue
-                        if ((downloadFailChapters[i] ?: 0) >= 3) continue
-                        downloadIndex(i)
-                    }
-                }
-                launch {
-                    val minChapterIndex = durChapterIndex - min(5, AppConfig.preDownloadNum)
-                    for (i in durChapterIndex.minus(2) downTo minChapterIndex) {
-                        if (downloadedChapters.contains(i)) continue
-                        if ((downloadFailChapters[i] ?: 0) >= 3) continue
-                        downloadIndex(i)
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * 批量预下载。
-     * 按书源声明的最大批量数量分批,书源没回存的章节留给单章流程兜底。
-     */
-    private suspend fun preDownloadBatch(bookSource: BookSource) {
-        val book = book ?: return
-        val batchSize = bookSource.contentBatchSize()
-        if (batchSize <= 1) return
-        val maxChapterIndex = min(durChapterIndex + AppConfig.preDownloadNum, chapterSize)
-        val minChapterIndex = durChapterIndex - min(5, AppConfig.preDownloadNum)
-        val indexes = (durChapterIndex.plus(2)..maxChapterIndex) +
-            (durChapterIndex.minus(2) downTo minChapterIndex)
-        val pending = indexes.mapNotNull { index ->
-            if (index < 0 || index > chapterSize - 1) return@mapNotNull null
-            if (downloadedChapters.contains(index)) return@mapNotNull null
-            if ((downloadFailChapters[index] ?: 0) >= 3) return@mapNotNull null
-            val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, index)
-                ?: return@mapNotNull null
-            if (chapter.isVolume || BookHelp.hasContent(book, chapter)) {
-                downloadedChapters.add(index)
-                return@mapNotNull null
-            }
-            chapter
-        }
-        if (pending.size < 2) return
-        val cacheBook = CacheBook.getOrCreate(bookSource, book)
-        pending.chunked(batchSize).forEach { batch ->
-            if (batch.size < 2) return@forEach
-            currentCoroutineContext().ensureActive()
-            cacheBook.downloadBatchAwait(batch)
-        }
-    }
-
+    /** 保守模式关闭自动网络预读；保留既有取消入口。 */
     fun cancelPreDownloadTask() {
-        if (contentLoadFinish) {
-            preDownloadTask?.cancel()
-            downloadScope.coroutineContext.cancelChildren()
-        }
+        cancelReadingDownloads()
+    }
+
+    @Synchronized
+    private fun cancelReadingDownloads() {
+        readingRequests.cancel()
+        loadingChapters.clear()
     }
 
     fun onChapterListUpdated(newBook: Book, loadContent: Boolean = true) {
@@ -2136,9 +2021,8 @@ object ReadBook : CoroutineScope by MainScope() {
 
     private fun releaseAndCancel() {
         msg = null
-        preDownloadTask?.cancel()
+        cancelReadingDownloads()
         invalidateHighlightRuleMatches()
-        downloadScope.coroutineContext.cancelChildren()
         coroutineContext.cancelChildren()
         ImageProvider.clear()
         clearExpiredChapterLoadingJob(true)

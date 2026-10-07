@@ -48,7 +48,8 @@ class TextPageFactory(dataSource: DataSource) : PageFactory<TextPage>(dataSource
         return if (hasNext()) {
             val pageIndex = pageIndex
             if (currentChapter == null || currentChapter?.isLastIndex(pageIndex) == true) {
-                if ((currentChapter == null || isScroll) && nextChapter == null) {
+                // 没有预读下一章时，滚动到章末也应允许按需进入下一章。
+                if (currentChapter == null && nextChapter == null) {
                     return@with false
                 }
                 ReadBook.moveToNextChapter(upContent, false)
