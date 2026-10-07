@@ -395,7 +395,8 @@ class ContentReversalUiTest {
             assertEquals(position, ReadBook.durChapterPos)
             val refreshedLayout = ReadBook.curTextChapter
             releaseObsolete.countDown()
-            runBlocking { withTimeout(5000) { obsoleteRead!!.await() } }
+            runBlocking { withTimeout(5000) { obsoleteRead!!.join() } }
+            assertTrue("刷新资源后旧正文任务应被取消", obsoleteRead!!.isCancelled)
             awaitDraw()
             assertSame("The completed old response must not replace or cancel the fresh layout",
                 refreshedLayout, ReadBook.curTextChapter)

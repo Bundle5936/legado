@@ -28,13 +28,16 @@ internal class CurrentChapterRequests {
 
         suspend fun <T> content(
             index: Int,
+            localBook: Boolean = false,
             cached: suspend () -> T?,
             download: suspend () -> T,
         ): T? {
             currentCoroutineContext().ensureActive()
             job.ensureActive()
-            if (index != chapterIndex) return null
+            // 本地PDF/电子书保留离线排版，任何相邻章都不能进入网络下载。
+            if (index != chapterIndex && !localBook) return null
             cached()?.let { return it }
+            if (index != chapterIndex) return null
             currentCoroutineContext().ensureActive()
             job.ensureActive()
             return download()

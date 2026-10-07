@@ -78,7 +78,7 @@ class ConservativeReadingUiTest {
             reviewSummaryUrl = "@js: baseUrl.replace('/body/', '/summary/');",
             summaryListRule = "$.items[*]", summaryParagraphIndexRule = "$.index",
             summaryParagraphDataRule = "$.id", summaryCountRule = "$.count"))
-    private val book = Book(bookUrl = "https://conservative.invalid/book/$id", origin = source.bookSourceUrl,
+    private val book = Book(bookUrl = "https://conservative.invalid/book/$id", tocUrl = "https://conservative.invalid/toc/$id", origin = source.bookSourceUrl,
         name = "保守阅读 $id", author = "Fixture", type = BookType.text, totalChapterNum = 4,
         canUpdate = false).apply { setPageAnim(PageAnim.noAnim); setUseReplaceRule(false) }
     private lateinit var chapters: List<BookChapter>
@@ -194,7 +194,7 @@ class ConservativeReadingUiTest {
             if (condition()) return
             SystemClock.sleep(50)
         }
-        throw AssertionError("超时：$message")
+        throw AssertionError("超时：$message; chapter=${ReadBook.durChapterIndex}, chapters=${ReadBook.chapterSize}, message=${ReadBook.msg}, body=${(0..3).map { bodyRequests.get(it) }}, summary=${(0..3).map { summaryRequests.get(it) }}")
     }
 
     private fun <T> main(block: (ReadBookActivity) -> T): T {

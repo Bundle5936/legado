@@ -1376,6 +1376,7 @@ object ReadBook : CoroutineScope by MainScope() {
             try {
                 // 只加载当前章，避免相邻缓存章的排版继续下载图片。
                 val content = request.content(index,
+                    localBook = requestBook.isLocal,
                     cached = { BookHelp.getContent(requestBook, chapter) },
                     download = { downloadAwait(requestBook, requestSource, chapter) },
                 ) ?: return@async
@@ -1416,6 +1417,7 @@ object ReadBook : CoroutineScope by MainScope() {
             if (!claimed) return@run
             try {
                 val content = request.content(index,
+                    localBook = requestBook.isLocal,
                     cached = { BookHelp.getContent(requestBook, chapter) },
                     download = { downloadAwait(requestBook, requestSource, chapter) },
                 ) ?: return@run

@@ -263,15 +263,12 @@ class ReaderSourceReimportUiTest {
         showMenu()
         onView(withId(R.id.tv_next)).perform(click())
         awaitReader(1)
-        await("next uncached reader request finishes") {
-            requests.get(2) > 0 && ReadBook.nextTextChapter?.chapter?.index == 2 &&
-                ReadBook.nextTextChapter?.isCompleted == true
-        }
-        assertTrue(BookHelp.getContent(book, chapters[2])!!.contains("UPDATED HTTP body 2"))
-        assertFalse(BookHelp.getContent(book, chapters[2])!!.contains("OLD HTTP body"))
+        assertEquals("未打开下一章前不能预下载", 0, requests.get(2))
         showMenu()
         onView(withId(R.id.tv_next)).perform(click())
         awaitReader(2)
+        assertTrue(BookHelp.getContent(book, chapters[2])!!.contains("UPDATED HTTP body 2"))
+        assertFalse(BookHelp.getContent(book, chapters[2])!!.contains("OLD HTTP body"))
         screenshot("reader-reimport-next-http-chapter")
     }
 

@@ -681,7 +681,6 @@ class ReadAloudMenuUiTest {
             .putExtra("bookUrl", fixture.bookUrl).putExtra("inBookshelf", true))
         await("three-chapter speech fixture") {
             ReadBook.durChapterIndex == 1 && ReadBook.curTextChapter?.isCompleted == true &&
-                ReadBook.prevTextChapter?.isCompleted == true && ReadBook.nextTextChapter?.isCompleted == true &&
                 it.findViewById<ReadView>(R.id.read_view).curPage.textPage.textChapter === ReadBook.curTextChapter
         }
         val service = startReadAloudService(paused = false)

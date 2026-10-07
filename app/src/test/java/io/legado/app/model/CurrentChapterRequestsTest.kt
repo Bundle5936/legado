@@ -27,6 +27,12 @@ class CurrentChapterRequestsTest {
                 assertEquals(if (index == 10) "downloaded" else null, text)
             }
             assertEquals(listOf(10), downloads)
+            assertEquals("local PDF", current.run {
+                current.content(9, localBook = true, cached = { "local PDF" }) { error("本地排版不能联网") }
+            })
+            assertNull(current.run {
+                current.content(9, localBook = true, cached = { null }) { error("相邻章不能下载") }
+            })
             assertEquals("cached current", current.run {
                 current.content(10, cached = { "cached current" }) { error("不应重新下载") }
             })

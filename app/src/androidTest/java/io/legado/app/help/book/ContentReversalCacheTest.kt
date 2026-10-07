@@ -179,11 +179,15 @@ class ContentReversalCacheTest {
                 CacheBook.getOrCreate(source, second).downloadAwait(chapters[1][0])
                 assertEquals(0, bodies.get(5))
                 refreshShelf(first, 2, TocUpdatePolicy.ALLOW_PRE_DOWNLOAD)
+                assertEquals("保守模式书架刷新不能自动下载正文", 0, (0..9).sumOf { bodies.get(it) })
+                refreshBookResources(source, first, chapters[0].slice(1..3))
                 assertEquals(listOf(0, 1, 1, 1, 0), (0..4).map { bodies.get(it) })
                 assertArrayEquals("Refreshing book A must retain book B's image bytes", red,
                     BookHelp.getImage(second, "$base/shared.png").readBytes())
                 assertTrue(ReadBookViewModel(context.applicationContext as Application).resourceThemeChanged(second))
                 refreshShelf(second, 2, TocUpdatePolicy.ALLOW_PRE_DOWNLOAD)
+                assertEquals("第二本书仍只更新目录", 0, (5..9).sumOf { bodies.get(it) })
+                refreshBookResources(source, second, chapters[1].slice(1..3))
                 assertEquals(listOf(0, 1, 1, 1, 0), (5..9).map { bodies.get(it) })
                 books.forEachIndexed { id, book ->
                     assertEquals("Shelf refresh retains the stored position", 17, appDb.bookDao.getBook(book.bookUrl)!!.durChapterPos)
