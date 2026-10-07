@@ -177,7 +177,6 @@ object ReadBook : CoroutineScope by MainScope() {
             if (field != value) {
                 field = value
                 cancelReadingDownloads()
-                clearExpiredChapterLoadingJob(true)
             }
         }
     var durChapterPos = 0
