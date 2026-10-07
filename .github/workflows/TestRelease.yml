@@ -1,4 +1,4 @@
-name: Test Release
+name: GitHub APK Release
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
         type: string
 
 concurrency:
-  group: test-release
+  group: github-apk-release
   cancel-in-progress: false
   queue: max
 
@@ -22,12 +22,12 @@ permissions:
 jobs:
 
   prepare:
-    if: ${{ !github.event.deleted }}
+    if: ${{ github.repository == 'Bundle5936/legado' && !github.event.deleted }}
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.set-ver.outputs.version }}
       versionCode: ${{ steps.set-ver.outputs.versionCode }}
-      label: ${{ steps.set-ver.outputs.label }}
+      tag: ${{ steps.set-ver.outputs.tag }}
       commit: ${{ steps.set-ver.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
@@ -38,7 +38,6 @@ jobs:
       - id: set-ver
         env:
           COMMIT_SHA: ${{ inputs.commit_sha || github.sha }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || \
             ! git merge-base --is-ancestor "$COMMIT_SHA" origin/master; then
@@ -56,49 +55,11 @@ jobs:
           fi
           commit_count=$(git rev-list "${base_commit}..HEAD" --count --no-merges)
           version_code=$((base_code + commit_count))
-          current_beta_code=$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/beta" \
-              --jq '.assets[].name' 2>/dev/null \
-              | sed -nE 's/.*[_\.-][vV][cC]([0-9]+)([_\.-].*)?$/\1/p' \
-              | sort -nr \
-              | head -n 1
-          )
-          if [[ -z "$current_beta_code" ]]; then
-            current_beta_code=$(
-              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/beta" \
-                --jq '.body' 2>/dev/null \
-                | sed -nE 's/.*legado-version-code:([0-9]+).*/\1/p' \
-                | head -n 1
-            )
-          fi
-          if [[ "$current_beta_code" =~ ^[0-9]+$ ]] && \
-            (( version_code < current_beta_code )); then
-            echo "Refusing beta version-code downgrade: $version_code < $current_beta_code"
-            exit 1
-          fi
-          branch="${GITHUB_REF_NAME//[^[:alnum:]._-]/_}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "versionCode=$version_code" >> "$GITHUB_OUTPUT"
-          echo "label=${branch}_${COMMIT_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "tag=self-${version_code}-${COMMIT_SHA:0:12}" >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Release Credentials
-        env:
-          RELEASE_KEY_STORE: ${{ secrets.RELEASE_KEY_STORE }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
-          LANZOU_ID: ${{ secrets.LANZOU_ID }}
-          LANZOU_PSD: ${{ secrets.LANZOU_PSD }}
-          LANZOU_FOLDER_ID: ${{ secrets.LANZOU_FOLDER_ID }}
-        run: |
-          for name in \
-            RELEASE_KEY_STORE RELEASE_KEY_PASSWORD RELEASE_STORE_PASSWORD \
-            LANZOU_ID LANZOU_PSD LANZOU_FOLDER_ID; do
-            if [ -z "${!name}" ]; then
-              echo "Missing required secret: $name"
-              exit 1
-            fi
-          done
 
   build:
     needs: prepare
@@ -131,20 +92,19 @@ jobs:
       - name: Prepare Assets
         run: echo "" > "$GITHUB_WORKSPACE/app/src/main/assets/18PlusList.txt"
 
-      - name: Release APK Sign
-        env:
-          RELEASE_KEY_STORE: ${{ secrets.RELEASE_KEY_STORE }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+      - name: 使用当前自用版本的签名
         run: |
-          printf '%s' "$RELEASE_KEY_STORE" | base64 --decode \
-            > "$GITHUB_WORKSPACE/app/legado.jks"
-          {
-            printf '%s\n' "RELEASE_KEY_PASSWORD=$RELEASE_KEY_PASSWORD"
-            printf '%s\n' "RELEASE_STORE_PASSWORD=$RELEASE_STORE_PASSWORD"
-            echo "RELEASE_STORE_FILE=./legado.jks"
-            echo "RELEASE_KEY_ALIAS=legado"
-          } >> "$GITHUB_WORKSPACE/gradle.properties"
+          cp .github/workflows/legado.jks app/legado.jks
+          cat >> gradle.properties <<'PROPERTIES'
+          RELEASE_STORE_FILE=./legado.jks
+          RELEASE_KEY_ALIAS=legado
+          RELEASE_STORE_PASSWORD=gedoor_legado
+          RELEASE_KEY_PASSWORD=gedoor_legado
+          PROPERTIES
+
+      - name: 单元测试
+        if: matrix.type == 'release'
+        run: bash ./gradlew :app:testAppReleaseUnitTest --build-cache --parallel --daemon
 
       - name: Build With Gradle
         run: |
@@ -152,9 +112,9 @@ jobs:
             "$GITHUB_WORKSPACE/app/build.gradle"
 
           if [ "$type" = "release" ]; then
-            typeName="新包名"
+            typeName="release"
           else
-            typeName="新共存"
+            typeName="releaseA"
             sed -i "s/'.release'/'.releaseA'/" \
               "$GITHUB_WORKSPACE/app/build.gradle"
             if [ -f "$GITHUB_WORKSPACE/app/google-services.json" ]; then
@@ -227,7 +187,7 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: legado.test.${{ env.type }}
+          name: legado.self.${{ env.type }}
           if-no-files-found: error
           path: ${{ github.workspace }}/apk/*.apk
 
@@ -237,13 +197,11 @@ jobs:
     permissions:
       contents: write
     env:
+      GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.prepare.outputs.version }}
       VERSION_CODE: ${{ needs.prepare.outputs.versionCode }}
-      RELEASE_LABEL: ${{ needs.prepare.outputs.label }}
-      ylogin: ${{ secrets.LANZOU_ID }}
-      phpdisk_info: ${{ secrets.LANZOU_PSD }}
-      LANZOU_FOLDER_ID: ${{ secrets.LANZOU_FOLDER_ID }}
-      LANZOU_URL: ${{ secrets.LANZOU_URL }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      COMMIT_SHA: ${{ needs.prepare.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -252,71 +210,53 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          path: apk/
+          pattern: legado.self.*
+          merge-multiple: true
+          path: apk
 
-      - name: Prepare APKs
-        working-directory: apk/
+      - name: 核对发布文件并生成说明
         run: |
-          mv */*.apk .
-          rm -rf -- */
-          for file in *.apk; do
-            if [[ "$file" = *新包名* ]]; then
-              renamed="${file/新包名/release}"
-            else
-              renamed="${file/新共存/releaseA}"
-            fi
-            mv -- "$file" "${renamed%.apk}_vc${VERSION_CODE}.apk"
+          set -euo pipefail
+          mapfile -d '' apks < <(find apk -maxdepth 1 -type f -name '*.apk' -print0)
+          test "${#apks[@]}" -eq 4
+          for apk in "${apks[@]}"; do
+            mv -- "$apk" "${apk%.apk}_vc${VERSION_CODE}.apk"
           done
-
-      - name: Prepare Release Notes
-        run: |
+          (cd apk && sha256sum *.apk > SHA256SUMS.txt)
           {
             printf '<!-- legado-version-code:%s -->\n' "$VERSION_CODE"
-            printf '此版本为提交测试版，可能存在不稳定情况，升级前请备份数据。\n\n'
-            bash .github/scripts/extract-latest-update.sh \
-              app/src/main/assets/updateLog.md
-          } > "$GITHUB_WORKSPACE/release-notes.md"
+            printf '本仓库自用构建，提交 `%s`。\n\n' "$COMMIT_SHA"
+            printf '普通手机下载带 `release` 且不带 `universal` 的 APK；共存版选择 `releaseA`。\n\n'
+            printf '沿用本仓库现有签名，可覆盖此前本仓库测试构建。\n\n'
+            bash .github/scripts/extract-latest-update.sh app/src/main/assets/updateLog.md
+          } > release-notes.md
 
-      - name: Update Beta Tag
+      - name: 发布到本仓库 Releases
         run: |
-          git tag --force beta "$(git rev-parse HEAD)"
-          git push origin refs/tags/beta --force
-
-      - name: Publish Beta Release
-        uses: ncipollo/release-action@v1
-        with:
-          name: legado_app_${{ env.VERSION }}
-          tag: beta
-          bodyFile: ${{ github.workspace }}/release-notes.md
-          prerelease: true
-          makeLatest: false
-          allowUpdates: true
-          omitBodyDuringUpdate: true
-          removeArtifacts: true
-          artifactErrorsFailBuild: true
-          artifacts: ${{ github.workspace }}/apk/*.apk
-
-      - name: Update Beta Release Notes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release edit beta \
-            --repo "$GITHUB_REPOSITORY" \
-            --notes-file "$GITHUB_WORKSPACE/release-notes.md"
-
-      - name: Prepare Lanzou APKs
-        working-directory: apk/
-        run: |
-          bash "$GITHUB_WORKSPACE/.github/scripts/remove-universal-apks.sh" \
-            "$GITHUB_WORKSPACE/apk"
-          for file in *.apk; do
-            renamed="${file/新包名/release}"
-            renamed="${renamed/新共存/releaseA}"
-            mv -- "$file" "${renamed%.apk}_测试版_${RELEASE_LABEL}.apk"
-          done
-
-      - name: Upload To Lanzou
-        run: |
-          python3 "$GITHUB_WORKSPACE/.github/scripts/lzy_web.py" \
-            "$GITHUB_WORKSPACE/apk" "$LANZOU_FOLDER_ID"
-          echo "[$(TZ=Asia/Shanghai date '+%Y.%m.%d %H:%M:%S')] 分享链接: $LANZOU_URL"
+          set -euo pipefail
+          # 同一提交重跑时复用草稿；已发布版本保留，不覆盖历史文件。
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq 'add' > releases.json
+          release_state=$(jq -r --arg tag "$RELEASE_TAG" \
+            '[.[] | select(.tag_name == $tag)] | if length == 0 then "missing" elif .[0].draft then "draft" else "published" end' releases.json)
+          if [ "$release_state" = published ]; then
+            echo "该提交已经发布，保留现有版本。"
+            echo "发布地址：https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$release_state" = missing ]; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$COMMIT_SHA" --draft \
+              --title "阅读自用版 $VERSION · $VERSION_CODE" --notes-file release-notes.md
+          else
+            target=$(jq -r --arg tag "$RELEASE_TAG" '.[] | select(.tag_name == $tag) | .target_commitish' releases.json)
+            test "$target" = "$COMMIT_SHA"
+          fi
+          gh release upload "$RELEASE_TAG" apk/*.apk apk/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          # 手动发布旧提交时不覆盖主线最新版本的 Latest 标记。
+          latest=false
+          master_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq '.object.sha')
+          if [ "$master_sha" = "$COMMIT_SHA" ]; then latest=true; fi
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --latest="$latest" --notes-file release-notes.md
+          echo "发布地址：https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
