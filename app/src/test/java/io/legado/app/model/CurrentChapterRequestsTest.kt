@@ -24,9 +24,12 @@ class CurrentChapterRequestsTest {
                         "downloaded"
                     }
                 }
-                assertEquals(when (index) { 9 -> "cached"; 10 -> "downloaded"; else -> null }, text)
+                assertEquals(if (index == 10) "downloaded" else null, text)
             }
             assertEquals(listOf(10), downloads)
+            assertEquals("cached current", current.run {
+                current.content(10, cached = { "cached current" }) { error("不应重新下载") }
+            })
             assertSame(current, requests.select("book", 10))
         } finally {
             requests.cancel()

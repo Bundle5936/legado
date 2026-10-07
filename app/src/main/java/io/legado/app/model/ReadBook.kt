@@ -1374,7 +1374,7 @@ object ReadBook : CoroutineScope by MainScope() {
             }
             if (!claimed) return@async
             try {
-                // 相邻章仅复用已有本地正文，绝不进入网络下载。
+                // 只加载当前章，避免相邻缓存章的排版继续下载图片。
                 val content = request.content(index,
                     cached = { BookHelp.getContent(requestBook, chapter) },
                     download = { downloadAwait(requestBook, requestSource, chapter) },

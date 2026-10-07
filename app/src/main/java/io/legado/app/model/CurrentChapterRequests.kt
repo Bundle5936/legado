@@ -33,8 +33,8 @@ internal class CurrentChapterRequests {
         ): T? {
             currentCoroutineContext().ensureActive()
             job.ensureActive()
-            cached()?.let { return it }
             if (index != chapterIndex) return null
+            cached()?.let { return it }
             currentCoroutineContext().ensureActive()
             job.ensureActive()
             return download()
